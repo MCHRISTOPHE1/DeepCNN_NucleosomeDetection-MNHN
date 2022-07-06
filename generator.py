@@ -164,13 +164,9 @@ class DNAmulti():
             self.weights_f = None
         
         elif self.apply_weight == 1: #For binned signal
-            _ , nbin = np.histogram(self.lab[idx], bins="doane")
-            digit = np.digitize(self.lab[idx], nbin)
-            uni, cou = np.unique(digit, return_counts=True)
-            w = np.max(cou)/cou
-            dicw = dict(zip(uni,w))
-            digit = np.vectorize(dicw.__getitem__)(digit)
-            self.weights_f = digit
+            hist , nbin = np.histogram(self.lab[idx], bins="doane", density=True)
+            digit = np.digitize(self.lab, nbin[:-1], right = False)-1
+            self.weights_f = hist[digit]
 
         else:
             self.weights_f = None
