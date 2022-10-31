@@ -25,7 +25,7 @@ day = datetime.datetime.now()
 parser = argparse.ArgumentParser()
 parser.add_argument("data", help='Kind of experimental signal to use, choose between {microc, mnase, chemical}', type=str)
 parser.add_argument("--supdata", help="precise data: mode {multimappers, uniquereads}, type {A,M}, replicate {1, 2, 3}", default="", type = str, nargs = "+")
-parser.add_argument("--batch", help="batch size", type = int, default=2048, required=False)
+parser.add_argument("--batch", help="batch size", type = int, default=4096, required=False)
 parser.add_argument("--winsize", help="Window size to use", type = int, default=2001, required=False)
 parser.add_argument("--epochs", help="Number of epochs to train",type = int, default=3, required=False)
 parser.add_argument("--model", help="name of the model (see modeles.py)",type = str, default = "MNase_simple", required=False)
@@ -88,12 +88,12 @@ elif data == "mnase":
 elif data =="test":
     lab = "/home/maxime/data/mnase/labels/multimappers/A/chr6.npy"
 elif data == "chemical":
-    lab = "/home/maxime/data/chemical/labels/Fsignal_{}.npy"
+    lab = "/home/maxime/data/chemical/labels/mm10/{}.npy"
 else:
     lab = data
 
 if data == "chemical":
-    seq = "/home/maxime/data/sequences/mm9/one_hot/chr{}.npy"
+    seq = "/home/maxime/data/sequences/mm10/one_hot/onehot_chr{}.npz"
 else:
     seq = "/home/maxime/data/sequences/mm10/one_hot/onehot_chr{}.npz"
 
