@@ -1,5 +1,14 @@
 import tensorflow as tf
 from losses import mae_cor, correlate
+from tensorflow.keras import layers
+from tensorflow.keras.layers import Input, Dense, Flatten
+from tensorflow.keras.models import Model
+
+from tensorflow.keras.layers import Input, Dense, Dropout, LayerNormalization
+from tensorflow.keras.layers import MultiHeadAttention, TimeDistributed, Conv1D
+from tensorflow.keras.layers import Flatten, GlobalAveragePooling1D, concatenate
+from tensorflow.keras.models import Model
+
 
 
 
@@ -13,32 +22,9 @@ def create_model(name:str = "CNN_simple", filters= 16,activation = "sigmoid",  i
     :param metrics: iterable of string (keras function) and/or objects (custom function)
     :param optimizer: keras optimizer
     """
-    if name == "CNN_simple":
-        model = tf.keras.models.Sequential()
 
-        model.add(tf.keras.layers.Conv1D(filters, kernel_size = 3,activation ='relu', input_shape=input_shape))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
 
-        model.add(tf.keras.layers.Conv1D(filters, kernel_size=10,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Conv1D(filters, kernel_size=20,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(1, activation=activation))
-
-        model.compile(optimizer=optimizer,
-                    loss=loss, metrics=metrics)
-        return model
-
-    elif name == "CNN_simple5H":
+    if name == "CNN_simple5H":
 
         model = tf.keras.models.Sequential()
 
@@ -65,271 +51,128 @@ def create_model(name:str = "CNN_simple", filters= 16,activation = "sigmoid",  i
         model.compile(optimizer=optimizer,
                     loss=loss, metrics=metrics)
         return model
-
-    elif name == "Chemical":
-        model = tf.keras.models.Sequential()
-
-        model.add(tf.keras.layers.Conv1D(64, kernel_size = 3,activation ='relu', input_shape=input_shape))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-
-        model.add(tf.keras.layers.Conv1D(64, kernel_size=10,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-
-        model.add(tf.keras.layers.Conv1D(64, kernel_size=20,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(16, activation="relu"))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
-        
-        model.compile(optimizer=optimizer,
-                    loss=metrics, metrics=metrics)
-        return model
-
-    elif name == "dilated":
-
-        """
-
-        inputs = tf.keras.Input(input_shape)
-        conv1 = tf.keras.layers.Conv1D(32, kernel_size = 5, activation="relu", padding = "same")(inputs)
-        convd1 = tf.keras.layers.Conv1D(32, kernel_size =5, activation = "relu", dilation_rate = 20, padding = "same")(inputs)
-        concat = tf.keras.layers.Concatenate()([conv1, convd1])
-        concat = tf.keras.layers.Conv1D(32, kernel_size = 5, activation = "relu")(concat)
-        concat = tf.keras.layers.MaxPooling1D(2)(concat)
-        concat = dense = tf.keras.layers.BatchNormalization()(concat)
-        concat = tf.keras.layers.Conv1D(32, kernel_size = 5, activation = "relu")(concat)
-        concat = tf.keras.layers.MaxPooling1D(2)(concat)
-        concat = dense = tf.keras.layers.BatchNormalization()(concat)
-        concat = tf.keras.layers.Conv1D(32, kernel_size = 5, activation = "relu")(concat)
-        concat = tf.keras.layers.MaxPooling1D(2)(concat)
-        concat = dense = tf.keras.layers.BatchNormalization()(concat)
-        concat = tf.keras.layers.Conv1D(32, kernel_size = 5, activation = "relu")(concat)
-        concat = tf.keras.layers.MaxPooling1D(2)(concat)
-        concat = dense = tf.keras.layers.BatchNormalization()(concat)
-        concat = tf.keras.layers.Conv1D(32, kernel_size = 5, activation = "relu")(concat)
-        concat = tf.keras.layers.MaxPooling1D(2)(concat)
-        concat = dense = tf.keras.layers.BatchNormalization()(concat)
-
-        flat = tf.keras.layers.Flatten()(concat)
-        dense =  tf.keras.layers.Dense(8, activation="relu")(flat)
-        dense = tf.keras.layers.BatchNormalization()(dense)
-        outputs = tf.keras.layers.Dense(1, activation="relu")(dense)
-        
-        model = tf.keras.Model(inputs=inputs, outputs=outputs)
-
-        """
-        model = tf.keras.models.Sequential()
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size = 3,activation ='relu', input_shape=input_shape))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=10,activation='relu', dilation_rate=2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=20,activation='relu', dilation_rate=2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(1, activation=activation))
-
-        model.compile(optimizer=optimizer, loss=metrics, metrics=metrics)
-        return model
     
-    elif name == "MNase_simple":
+    elif name == "mnase_mod5H":
+
         model = tf.keras.models.Sequential()
 
-        model.add(tf.keras.layers.Conv1D(32, kernel_size = 3,activation ='relu', input_shape=input_shape))
+        model.add(tf.keras.layers.Conv1D(32, kernel_size = 6,activation ='elu', input_shape=input_shape))
         model.add(tf.keras.layers.MaxPooling1D(2))
         model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.1))
 
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=10,activation='relu'))
+        model.add(tf.keras.layers.Conv1D(64, kernel_size=11,activation='elu'))
         model.add(tf.keras.layers.MaxPooling1D(2))
         model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
 
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=20,activation='relu'))
+        model.add(tf.keras.layers.Conv1D(128, kernel_size=21,activation='elu'))
         model.add(tf.keras.layers.MaxPooling1D(2))
         model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
 
         model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(8, activation="relu"))
+        model.add(tf.keras.layers.Dense(16, activation="elu"))
         model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
+        model.add(tf.keras.layers.Dense(5, activation="sigmoid"))
         
         model.compile(optimizer=optimizer,
                     loss=loss, metrics=metrics)
         return model
 
-    elif name == "bases_inference":
+
+    elif name == "encode":
         model = tf.keras.models.Sequential()
 
-        model.add(tf.keras.layers.Conv1D(32, kernel_size = 3,activation ='relu', input_shape=input_shape))
+        model.add(tf.keras.layers.Conv1D(128, kernel_size = 5,padding = "same", activation ='elu', input_shape=input_shape))
         model.add(tf.keras.layers.MaxPooling1D(2))
         model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.1))
 
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=10,activation='relu'))
+        model.add(tf.keras.layers.Conv1D(64, kernel_size = 5,padding = "same", activation ='elu', input_shape=input_shape))
         model.add(tf.keras.layers.MaxPooling1D(2))
         model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
 
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=20,activation='relu'))
+        model.add(tf.keras.layers.Conv1D(64, kernel_size=5,padding="same", activation='elu'))
         model.add(tf.keras.layers.MaxPooling1D(2))
         model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
+
+        # model.add(tf.keras.layers.Conv1D(128, kernel_size=21, padding = "same", activation='elu'))
+        # model.add(tf.keras.layers.MaxPooling1D(2))
+        # model.add(tf.keras.layers.BatchNormalization())
+
+        model.add(tf.keras.layers.Dense())
+
+        # model.add(tf.keras.layers.Conv1DTranspose(128, kernel_size=250, strides=2, padding='same', activation='elu'))
+        # model.add(tf.keras.layers.BatchNormalization())
+
+        model.add(tf.keras.layers.Conv1DTranspose(64, kernel_size=5, strides=2, padding='same', activation='elu'))
+        model.add(tf.keras.layers.BatchNormalization())
+
+        model.add(tf.keras.layers.Conv1DTranspose(64, kernel_size=5, strides=2, padding='same', activation='elu'))
+        model.add(tf.keras.layers.BatchNormalization())
+
+        model.add(tf.keras.layers.Conv1DTranspose(128, kernel_size=5, strides=2, padding='same', activation='elu'))
+        model.add(tf.keras.layers.BatchNormalization())
+
+        model.add(tf.keras.layers.Conv1D(1, kernel_size=1, padding='same', activation='sigmoid'))
+       
+        
+        model.compile(optimizer=optimizer,
+                    loss=loss, metrics=metrics)
+
+        return model
+    
+
+    elif name == "Chemical_5H":
+        model = tf.keras.models.Sequential()
+
+        model.add(tf.keras.layers.Conv1D(64, kernel_size = 5,activation ='relu', input_shape=input_shape))
+        model.add(tf.keras.layers.MaxPooling1D(2))
+        model.add(tf.keras.layers.BatchNormalization())
+
+        model.add(tf.keras.layers.Conv1D(64, kernel_size=11,activation='relu'))
+        model.add(tf.keras.layers.MaxPooling1D(2))
+        model.add(tf.keras.layers.BatchNormalization())
+
+        model.add(tf.keras.layers.Conv1D(64, kernel_size=21,activation='relu'))
+        model.add(tf.keras.layers.MaxPooling1D(2))
+        model.add(tf.keras.layers.BatchNormalization())
 
         model.add(tf.keras.layers.Flatten())
         model.add(tf.keras.layers.Dense(8, activation="relu"))
         model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
+        model.add(tf.keras.layers.Dense(5, activation="sigmoid"))
         
         model.compile(optimizer=optimizer,
-                    loss=metrics, metrics=metrics)
-        return model
-
-    elif name == "Quick_train":
-        model = tf.keras.models.Sequential()
-
-        model.add(tf.keras.layers.Conv1D(16, kernel_size = 3,activation ='relu', input_shape=input_shape))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.1))
-
-        model.add(tf.keras.layers.Conv1D(16, kernel_size=10,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Conv1D(16, kernel_size=20,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(16, activation="relu"))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
-        
-        model.compile(optimizer=optimizer,
-                    loss=metrics, metrics=metrics)
-        return model
-
-    elif name == "test":
-        model = tf.keras.models.Sequential()
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size = 25,activation ='relu', input_shape=input_shape))
-        model.add(tf.keras.layers.BatchNormalization())
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=3,dilataion_rate=2,activation='relu'))
-        model.add(tf.keras.layers.BatchNormalization())
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=3,dilataion_rate=4,activation='relu'))
-        model.add(tf.keras.layers.BatchNormalization())
-    
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=3,dilataion_rate=8,activation='relu'))
-        model.add(tf.keras.layers.BatchNormalization())
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=3,dilataion_rate=16,activation='relu'))
-        model.add(tf.keras.layers.BatchNormalization())
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=3,dilataion_rate=32,activation='relu'))
-        model.add(tf.keras.layers.BatchNormalization())
-
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
-        
-        model.compile(optimizer=optimizer,
-                    loss=metrics, metrics=metrics)
-        return model
-
-    elif name == "chem_simple":
-        model = tf.keras.models.Sequential()
-
-        model.add(tf.keras.layers.Conv1D(64, kernel_size = 3, input_shape=input_shape))
-        model.add(tf.keras.layers.Conv1D(64, kernel_size = 3,activation ='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.1))
-
-        model.add(tf.keras.layers.Conv1D(64, kernel_size=10))
-        model.add(tf.keras.layers.Conv1D(64, kernel_size=10, activation = "relu"))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Conv1D(64, kernel_size=20))
-        model.add(tf.keras.layers.Conv1D(64, kernel_size=20,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(8, activation="relu"))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
-        
-        model.compile(optimizer=optimizer,
-                    loss=metrics, metrics=metrics)
+                    loss=loss, metrics=metrics)
         return model
     
-    elif name =="CNN_deep":
-        model = tf.keras.models.Sequential()
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size = 3,activation ='relu', input_shape=input_shape))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=11,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=21,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
-
+    elif name == "lstm":
+        model = tf.keras.Sequential()
+        model.add(layers.LSTM(128, input_shape=input_shape, return_sequences=True))
+        # Dropout layer to prevent overfitting
+        model.add(layers.Dropout(0.2))
+        # Dense layer with sigmoid activation for binary classification
+        model.add(layers.Dense(5, activation='sigmoid'))
         model.compile(optimizer=optimizer,
                     loss=loss, metrics=metrics)
         return model
 
-    elif name == "signal":
+    elif name=="exptest":
+
         model = tf.keras.models.Sequential()
 
-        model.add(tf.keras.layers.Conv1D(32, kernel_size = 5,activation ='relu', input_shape=input_shape))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.1))
+        model.add(tf.keras.layers.LSTM(256, return_sequences=True, input_shape=input_shape))
+        # model.add(tf.keras.layers.BatchNormalization())
+        model.add(tf.keras.layers.Dropout(0.2))
 
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=10,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Conv1D(32, kernel_size=20,activation='relu'))
-        model.add(tf.keras.layers.MaxPooling1D(2))
-        model.add(tf.keras.layers.BatchNormalization())
-        #model.add(tf.keras.layers.Dropout(0.2))
-
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(1000, activation="sigmoid"))
+        model.add(tf.keras.layers.LSTM(128))
+        # model.add(tf.keras.layers.BatchNormalization())
+        model.add(tf.keras.layers.Dropout(0.2))
+        model.add(tf.keras.layers.Dense(5, activation="sigmoid"))
         
         model.compile(optimizer=optimizer,
                     loss=loss, metrics=metrics)
         return model
 
     else:
-        raise IndexError("Unknown model")
+        print("no model found")
+        return None
+

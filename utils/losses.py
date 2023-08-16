@@ -33,6 +33,10 @@ def correlate(y_true, y_pred):
     
     return sigma_XY/(sigma_X*sigma_Y + K.epsilon())
 
+def max_absolute_error(y_true, y_pred):
+    diff = K.abs(y_true - y_pred)
+    return K.log(K.mean(K.exp(diff)))
+
 def mae_var_cor(y_true, y_pred):
     """
 	   Calculate the mean absolute error minus the correlation between
@@ -81,9 +85,9 @@ def mae_cor(y_true, y_pred):
     cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
     mae = K.mean(K.abs(y_true - y_pred))
     
-    return (1- cor) + mae 
+    return ((1- cor) + mae)
 
-def mse_cor(y_true, y_pred):
+def maex2_cor(y_true, y_pred):
     """
 	   Calculate the mean absolute error minus the correlation between
         predictions and  labels.
@@ -101,9 +105,70 @@ def mse_cor(y_true, y_pred):
     sigma_Y = K.sqrt(K.sum(Y*Y))
     
     cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
-    mae = K.mean(K.sqrt(y_true - y_pred))
+    mae = K.mean(K.abs(y_true - y_pred))
+    
+    return ((1- cor) + 2*mae)
+
+def rmse_cor(y_true, y_pred):
+    """
+	   Calculate the mean absolute error minus the correlation between
+        predictions and  labels.
+
+		:Example:
+
+		>>> model.compile(optimizer = 'adam', losses = mae_cor)
+		>>> load_model('file', custom_objects = {'mae_cor : mae_cor})
+	"""
+    X = y_true - K.mean(y_true)
+    Y = y_pred - K.mean(y_pred)
+    
+    sigma_XY = K.sum(X*Y)
+    sigma_X = K.sqrt(K.sum(X*X))
+    sigma_Y = K.sqrt(K.sum(Y*Y))
+    
+    cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
+    mae = K.sqrt(K.mean((y_true - y_pred)**2))
     
     return 1 + mae - cor
+
+def rmsle(y_true, y_pred):
+    X = y_true-0.5
+    s = K.sign(X)
+    X /= s
+
+    Y = (y_pred-0.5)/s
+
+    X = K.log(X+1)
+    Y = K.log(Y+1)
+
+    return K.sqrt(K.mean(X-Y))
+
+def stretch_cor(y_true, y_pred):
+    X = y_true - K.mean(y_true)
+    Y = y_pred - K.mean(y_pred)
+    
+    sigma_XY = K.sum(X*Y)
+    sigma_X = K.sqrt(K.sum(X*X))
+    sigma_Y = K.sqrt(K.sum(Y*Y))
+    
+    cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
+    stretch=0.5 - K.abs(Y-0.5)
+
+    return 1-cor+stretch
+
+def mae_cor_ratio(y_true, y_pred):
+    X = y_true - K.mean(y_true)
+    Y = y_pred - K.mean(y_pred)
+    
+    sigma_XY = K.sum(X*Y)
+    sigma_X = K.sqrt(K.sum(X*X))
+    sigma_Y = K.sqrt(K.sum(Y*Y))
+    
+    cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
+    mae = K.mean(K.abs(y_true - y_pred))
+
+    return mae/cor
+
 
 def mae_cor_div(y_true, y_pred):
     """
