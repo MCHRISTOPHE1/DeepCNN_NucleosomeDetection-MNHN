@@ -9,10 +9,29 @@ try:
     from keras import backend as K
 except ModuleNotFoundError:
     from tensorflow.keras import backend as K
+
 import keras.backend as K
 import tensorflow as tf
 from keras.layers import Conv1D, Input, Lambda, Reshape
 from keras.models import Model
+
+
+def wmae(y_true, y_pred, weights):
+    return K.mean(K.abs(y_true-y_pred)*weights)
+
+def wcorrelate(y_true, y_pred, weights):
+    mx = K.sum(y_true*weights)/K.sum(weights)
+    my = K.sum(y_pred*weights)/K.sum(weights)
+    
+    sx = K.sum(weights*(y_true-mx)**2)/K.sum(weights)
+    sy = K.sum(weights*(y_pred-my)**2)/K.sum(weights)
+    
+    sxy = K.sum(weights*(y_true-mx)*(y_pred-my))/K.sum(weights)
+    return sxy/K.sqrt(sx*sy)
+
+def wmae_cor(y_true, y_pred, weights):
+    return wmae(y_true, y_pred, weights) + 1 - wcorrelate(y_true, y_pred, weights)
+
 
 
 def correlate(y_true, y_pred):
@@ -64,6 +83,31 @@ def mae_var_cor(y_true, y_pred):
     
     return mae + 1 - cor + 1 + var
 
+def mymse(y_true, y_pred):
+    return K.mean(K.square(y_true - y_pred))
+
+
+# def wmae_cor(y_true, y_pred):
+#     """
+# 	   Calculate the mean absolute error minus the correlation between
+#         predictions and  labels.
+
+# 		:Example:
+
+# 		>>> model.compile(optimizer = 'adam', losses = mae_cor)
+# 		>>> load_model('file', custom_objects = {'mae_cor : mae_cor})
+# 	"""
+#     X = y_true - K.mean(y_true)
+#     Y = y_pred - K.mean(y_pred)
+    
+#     sigma_XY = K.sum(X*Y)
+#     sigma_X = K.sqrt(K.sum(X*X))
+#     sigma_Y = K.sqrt(K.sum(Y*Y))
+    
+#     cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
+#     mae = K.abs(y_true - y_pred)
+    
+#     return ((1- cor) + mae)
 
 def mae_cor(y_true, y_pred):
     """
@@ -87,7 +131,7 @@ def mae_cor(y_true, y_pred):
     
     return ((1- cor) + mae)
 
-def mse_cor(y_true, y_pred):
+def maex2_cor(y_true, y_pred):
     """
 	   Calculate the mean absolute error minus the correlation between
         predictions and  labels.
@@ -105,9 +149,70 @@ def mse_cor(y_true, y_pred):
     sigma_Y = K.sqrt(K.sum(Y*Y))
     
     cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
-    mae = K.mean(K.sqrt(y_true - y_pred))
+    mae = K.mean(K.abs(y_true - y_pred))
+    
+    return ((1- cor) + 2*mae)
+
+def rmse_cor(y_true, y_pred):
+    """
+	   Calculate the mean absolute error minus the correlation between
+        predictions and  labels.
+
+		:Example:
+
+		>>> model.compile(optimizer = 'adam', losses = mae_cor)
+		>>> load_model('file', custom_objects = {'mae_cor : mae_cor})
+	"""
+    X = y_true - K.mean(y_true)
+    Y = y_pred - K.mean(y_pred)
+    
+    sigma_XY = K.sum(X*Y)
+    sigma_X = K.sqrt(K.sum(X*X))
+    sigma_Y = K.sqrt(K.sum(Y*Y))
+    
+    cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
+    mae = K.sqrt(K.mean((y_true - y_pred)**2))
     
     return 1 + mae - cor
+
+def rmsle(y_true, y_pred):
+    X = y_true-0.5
+    s = K.sign(X)
+    X /= s
+
+    Y = (y_pred-0.5)/s
+
+    X = K.log(X+1)
+    Y = K.log(Y+1)
+
+    return K.sqrt(K.mean(X-Y))
+
+def stretch_cor(y_true, y_pred):
+    X = y_true - K.mean(y_true)
+    Y = y_pred - K.mean(y_pred)
+    
+    sigma_XY = K.sum(X*Y)
+    sigma_X = K.sqrt(K.sum(X*X))
+    sigma_Y = K.sqrt(K.sum(Y*Y))
+    
+    cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
+    stretch=0.5 - K.abs(Y-0.5)
+
+    return 1-cor+stretch
+
+def mae_cor_ratio(y_true, y_pred):
+    X = y_true - K.mean(y_true)
+    Y = y_pred - K.mean(y_pred)
+    
+    sigma_XY = K.sum(X*Y)
+    sigma_X = K.sqrt(K.sum(X*X))
+    sigma_Y = K.sqrt(K.sum(Y*Y))
+    
+    cor = sigma_XY/(sigma_X*sigma_Y + K.epsilon())
+    mae = K.mean(K.abs(y_true - y_pred))
+
+    return mae/cor
+
 
 def mae_cor_div(y_true, y_pred):
     """

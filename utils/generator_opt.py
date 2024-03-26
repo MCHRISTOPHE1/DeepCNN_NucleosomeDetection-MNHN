@@ -1,8 +1,18 @@
-import numpy as np
-from myfunc import loadnp
-import tensorflow as tf
 import math
+import os
+import tempfile
+import time
+from inspect import signature
+from typing import Iterable, List
 
+import numpy as np
+import pyBigWig as pbw
+import tensorflow as tf
+from myfunc import (consecutive, create_ranges, gauss, loadnp, reshape_bin,
+                    space_random_opt)
+from preprocess import process_dic
+
+# import torchma
 try : 
     from sklearn.utils.class_weight import compute_sample_weight
 except (ImportError, ModuleNotFoundError) as e:
@@ -10,17 +20,19 @@ except (ImportError, ModuleNotFoundError) as e:
     pass
 
 
-class DNAmulti5H():
-    #UPDATED 14/06/2022
+class KDNAmulti_bw(tf.keras.utils.Sequence):
     """
-    Generate batch for keras.fit()
+    Generate batch for keras.fit() from bigwig
     """
 
-    def __init__(self,seq,lab=None, winsize = 2001, frac=1., 
-    zeros=False, sample = True, apply_weights= True, reverse=False, N=0, truncate = 3_000_000):
+    def __init__(self,seq,lab=None, chr=Iterable[int], winsize = 2001, frac=10_000_000, 
+                reverse="", truncate = 3_000_000, batch_size=2048, mask = None,
+                headsteps = np.array([-500, -250, 0, 250, 500]), weights = True, index_selection="",
+                process_fun = None):
         """
         :param str seq: path to a numpy array stored as npz in ["arr_0"], the array contains the one-hot encoded DNA/RNA sequence
-        :param str lab:  path to a numpy array stored as npz in ["arr_0"], the array contains labels for the center of the considered window
+        :param str lab:  path to a bigwig, containing counts
+        :param Iterable[int]: list of chromosomes number to use
         :param str weights: path to a numpy array stored as npz in ["arr_0"], the array contains weights for each label
         :param int winsize: size of the window, must be odd
         :param float frac: fraction of the label to use, must be in [0:1]
@@ -31,8 +43,216 @@ class DNAmulti5H():
         :param int N: 0:remove N, 1:keep N
         :param func fun: allow user to pass a function to select specific label ex : def func(arr): \n arr[arr<0.5] = 0 \n return arr 
         """
+        self.bw = lab
+        with pbw.open(self.bw) as f:
+            self.chrom_size = f.chroms()
+
+        self.chr = [f"chr{x}" for x in chr]
+        self.one_hot = seq
+
+        # self.length, self.lab, self.seq = [0],[],[]
+        self.winsize = winsize
+        self.reverse = reverse
+        self.batch_size = batch_size
+        # self.index = []
+        # self.weights_f = []
+        self.step = headsteps
+        self.frac =frac
+        self.truncate = truncate
+        self.weights = weights
+        self.index_selection = index_selection
+        self.mask = mask
+        self.process_fun = process_fun
+        
+        self.select_chr()
+
+
+    def select_chr(self, end=None):
+        if end is None:
+            self.lab, self.seq = [],[]
+            #self.index = []
+            self.weights_f = []
+
+            # Read files
+            """Check wether the file is a npz or npy and extract ["arr_0"] in case of npz
+            Each label file must match with the sequence file (no double check programmed)"""
+            random_idx = np.random.choice(np.arange(0, len(self.chr)), size=min(3, len(self.chr)), replace=None)
+
+            bw = pbw.open(self.bw)
+            for ridx in random_idx:
+                #load counts and process it
+                counts = np.array(bw.values(self.chr[ridx],
+                                   0, self.chrom_size[self.chr[ridx]]), dtype=int)
+                
+                if self.process_fun is not None:
+                    print(f"processing label \'{self.chr[ridx]}\'")
+                    print(signature(self.process_fun))
+                    print(counts)        
+                    counts = self.process_fun(counts)
+                else: print(f"No preprocessing on labels \'{self.chr[ridx]}\'")
+                
+                self.lab.append(counts[self.truncate:])
+                self.seq.append(loadnp(self.one_hot[ridx]).reshape((-1,4))[self.truncate:len(self.lab[-1])+self.truncate,:])
+                self.lab[-1][:self.winsize+1] = 0
+                self.lab[-1][-self.winsize:] = 0
+                print(self.lab[-1], np.sum(self.lab[-1]))
+                if self.mask is not None:
+                    print("masking labels...")
+                    m = self.mask(self.chr[ridx]) - self.truncate
+                    m = m[m>=0]
+                    self.lab[-1][m] = 0 #remove selected part of signal, usually used for repeats
+                else: print(f"No masking on labels \'{self.chr[ridx]}\'")
+    
+
+            self.lab = np.concatenate(self.lab, axis = None)
+            self.seq = np.concatenate(self.seq, axis = 0)
+
+            #N
+            n_pos = np.sum(self.seq, axis = 1)==0
+            self.lab[np.convolve(n_pos, np.ones(self.winsize), mode = "same")!=0] = 0
+        
+            bw.close()
+            
+        if self.index_selection == "local":
+            self.index = np.where(self.lab!=0)[0]
+            self.index_epoch = np.random.choice(self.index, replace=False, size=(self.frac//self.batch_size)+1)
+            self.index_epoch = np.repeat(self.index_epoch, self.batch_size)
+            self.index_epoch += np.tile(np.arange(self.batch_size), (self.frac//self.batch_size)+1)
+        
+        elif self.index_selection == "no-overlap":
+            self.index = np.arange(len(self.lab))
+            bin, pos = np.where(reshape_bin(self.lab, self.winsize)!=0)
+            self.index_epoch = []
+            for n in np.random.choice(np.unique(bin),
+                                      replace=False,
+                                      size=min((self.frac, len(self.lab)%self.winsize))):
+                
+                self.index_epoch.append(
+                    self.index[np.random.choice(pos[bin==n], 1)])
+                
+            self.index_epoch=np.hstack(self.index_epoch)
+            
+            
+        else:
+            try:
+                self.index = np.where(self.lab!=0)[0]
+                self.index_epoch = np.random.choice(self.index, replace=False, size = min(self.frac, len(self.index)))
+                self.index = self.index[np.isin(self.index, self.index_epoch, invert=True)]
+            except (IndexError, ValueError) as e:
+                print(e, "New indices generated")
+
+        
+    def __len__(self):
+        size = len(self.index_epoch)//self.batch_size
+        if self.reverse == "augmentation":
+            return 2*size
+        else:
+            return size
+    
+    def on_epoch_end(self):
+        if self.index_selection == "validation":
+            pass
+        elif len(self.chr)>3:
+            self.select_chr()
+        else:
+            self.select_chr(end = 1)
+
+    def __getitem__(self, index):
+        """
+        Used to generate a batch with images when training/testing/validating our Keras model.
+        :param arr image_idx: index produced by generate_split_indexes
+        :param bool is_training: indicate if the generator is used to train (True) or else (False)
+        :param int batch_size: number of data in a single batch
+
+        steps are indexed from the stard of the window
+        """
+
+        images, classes, weights = [], [], []
+        halfsize = self.winsize//2
+        odd = self.winsize%2
+
+        low = index * self.batch_size
+        high = min(low + self.batch_size, len(self.index_epoch))
+        batch = self.index_epoch[low:high]
+
+        #Sequences
+        try:
+            ranges = create_ranges(batch-halfsize, batch + halfsize + odd)
+        except IndexError:
+            print(np.min(batch))
+            raise
+
+        #Labels
+        heads = np.repeat(batch, len(self.step)).reshape((-1, len(self.step)))
+        heads += self.step
+
+        fixidx = np.unique(np.where(heads<len(self.lab))[0])
+        ranges = ranges.reshape((-1, self.winsize))[fixidx,:].ravel()
+        heads = heads[fixidx,:].ravel()
+        images = self.seq[ranges,:].reshape(-1, self.winsize, 4)
+        classes = self.lab[heads].reshape((-1, len(self.step)))
+        weights = np.zeros(classes.shape)
+        idx_weights = classes!=0
+        if self.weights:
+            weights[idx_weights] = compute_sample_weight("balanced", np.round(classes[idx_weights], 2).ravel())
+        else:
+            weights = np.ones(classes.shape)
+        
+        if self.reverse == "random":
+            randidx = np.random.choice(np.arange(len(images)), size=len(images)//2, replace=False)
+            images[randidx,...] = images[randidx,::-1, ::-1]
+            classes[randidx,:] = classes[randidx,::-1]
+            weights[randidx,:] = weights[randidx, ::-1]
+
+        elif self.reverse == "reverse":
+            images = images[:,::-1, ::-1]
+            classes = classes[:,::-1]
+            weights = weights[:, ::-1]
+
+        elif self.reverse == "augmentation":
+            images = np.vstack([images, images[:,::-1, ::-1]])
+            classes = np.vstack([classes, classes[:,::-1]])
+            weights = np.vstack([weights, weights[:, ::-1]])
+
+
+        # print(images.shape)
+        # print(classes.shape)
+        # print(weights.shape)
+        
+        if self.weights:
+            return images, classes, weights,
+        else:
+            return images, classes, np.ones(classes.shape),
+        
+
+
+
+
+
+
+class DNAmulti5H():
+
+    """
+    Generate batch for keras.fit()
+    """
+
+    def __init__(self,seq,lab=None, winsize = 2001, frac=1., 
+    zeros=False, sample = True, apply_weights= -1, reverse=False, N=0, truncate = 3_000_000):
+        """
+        :param str seq: path to a numpy array stored as npz in ["arr_0"], the array contains the one-hot encoded DNA/RNA sequence
+        :param str lab:  path to a numpy array stored as npz in ["arr_0"], the array contains labels for the center of the considered window
+        :param str weights: path to a numpy array stored as npz in ["arr_0"], the array contains weights for each label
+        :param int winsize: size of the window, must be odd
+        :param float frac: fraction of the label to use, must be in [0:1]
+        :param bool zeros: include labels 0 in the training if True
+        :param bool sample: sample the labels if true
+        :param int apply_weights: 0: No weights, 1: array of sample weights, 2: dict of sample weights, 3: undersampling
+        :param int reverse: 0:No reverse, 1: both, 2: reverse on<sly
+        :param int N: 0:remove N, 1:keep N
+        :param func fun: allow user to pass a function to select specific label ex : def func(arr): \n arr[arr<0.5] = 0 \n return arr 
+        """
         # Assertions
-        assert winsize%2==1, "Window size must be odd"
+        #assert winsize%2==1, "Window size must be odd"
         assert 0.<=frac<=1., "frac must be in [0:1]"
       
         # Variables
@@ -44,7 +264,7 @@ class DNAmulti5H():
         self.sample=sample
         self.reverse = reverse
         self.truncate = truncate
-
+        print("winsize :", self.winsize)
         # Read files
         """Check wether the file is a npz or npy and extract ["arr_0"] in case of npz
         Each label file must match with the sequence file (no double check programmed)"""
@@ -111,13 +331,19 @@ class DNAmulti5H():
         idx = np.concatenate(idx)
         
         if self.apply_weight: #sklearn
+            
             self.weights_f = np.zeros(self.lab.shape)
-            weights_tmp = compute_sample_weight("balanced", self.lab[idx]).ravel()
+            weights_tmp = compute_sample_weight("balanced", np.round(self.lab[idx],2)).ravel()
             self.weights_f[idx] = weights_tmp
+            print("number of weights : ", len(np.unique(self.weights_f)))
+        # elif self.apply_weight > 1: #hist
+        #     hist , nbin = np.histogram(self.lab[idx], bins=self.apply_weight, density=True)
+        #     digit = np.digitize(self.lab, nbin[:-1], right = False)-1
+        #     self.weights_f = hist[digit]
             
         else:
             self.weights_f = None
-
+        print("number of 0's in labels : ", np.sum(self.lab[idx]==0))
         return idx
 
 
@@ -130,6 +356,8 @@ class DNAmulti5H():
 
         steps are indexed from the stard of the window
         """
+        print("Data generation....")
+
         assert len(image_idx) >= batch_size, "not enough index for this batch_size"
 
         if self.sample:
@@ -140,11 +368,11 @@ class DNAmulti5H():
         while True:
             for idx in image_idx:
                 try:
-                    im = self.seq[idx - (self.winsize//2) : idx+(self.winsize//2)+1,:]
-                    classe = self.lab[[idx + x for x in step]]
+                    im = self.seq[idx - (self.winsize//2) : idx+(self.winsize//2)+self.winsize%2,:]
+                    classe = self.lab[step+idx]
                     assert im.shape == (self.winsize, 4)
                     try:
-                        weight = self.weights_f[[idx + x for x in step]]
+                        weight = self.weights_f[step+idx]
                     except TypeError:
                         pass
 
@@ -187,11 +415,17 @@ class DNAmulti5H():
                     if rand>0.5:
                         classes.append(classe)
                         images.append(im)
-                        weights.append(weight)
+                        try:
+                            weights.append(weight)
+                        except (TypeError, UnboundLocalError) as e:
+                            pass
                     else:
                         classes.append(classe.copy()[::-1])
                         images.append(im.copy()[::-1, ::-1])
-                        weights.append(weight.copy()[::-1])
+                        try:
+                            weights.append(weight.copy()[::-1])
+                        except (TypeError, UnboundLocalError) as e:
+                            pass
                 else:
                     classes.append(classe)
                     images.append(im)
@@ -205,11 +439,9 @@ class DNAmulti5H():
                 if len(images) >= batch_size:
                     classes = np.array(classes)
                     images = np.vstack(images).reshape(-1, self.winsize, 4)
+                    # print(f"classes : {classes.shape}\
+                    #       images : {images.shape}")
 
-
-                    # print("Classes", classes.shape)
-                    # print("Images", images.shape)
-                    # print("Weights", weights.shape)
                     if self.apply_weight:
                         weights = np.array(weights)
                         yield images, classes, weights
@@ -222,14 +454,15 @@ class DNAmulti5H():
                 return None
 
 
-class KDNAmulti5H(tf.keras.utils.Sequence):
+class KDNAmulti(tf.keras.utils.Sequence):
     #UPDATED 14/06/2022
     """
     Generate batch for keras.fit()
     """
 
-    def __init__(self,seq,lab=None, winsize = 2001, frac=1., 
-    zeros=False, sample = True, apply_weights= True, reverse=False, N=0, truncate = 3_000_000, batch_size=4096):
+    def __init__(self,seq,lab=None, winsize = 2001, frac=10_000_000, 
+                reverse="", truncate = 3_000_000, batch_size=2048, mask = None,
+                headsteps = np.array([-500, -250, 0, 250, 500]), weights = True, index_selection=""):
         """
         :param str seq: path to a numpy array stored as npz in ["arr_0"], the array contains the one-hot encoded DNA/RNA sequence
         :param str lab:  path to a numpy array stored as npz in ["arr_0"], the array contains labels for the center of the considered window
@@ -243,271 +476,138 @@ class KDNAmulti5H(tf.keras.utils.Sequence):
         :param int N: 0:remove N, 1:keep N
         :param func fun: allow user to pass a function to select specific label ex : def func(arr): \n arr[arr<0.5] = 0 \n return arr 
         """
-        # Assertions
-        assert winsize%2==1, "Window size must be odd"
-        assert 0.<=frac<=1., "frac must be in [0:1]"
-      
         # Variables
-        self.len, self.lab, self.seq = [0],[],[]
-        self.frac = frac
-        self.zeros = zeros
-        self.apply_weight = apply_weights
+        ztoy = lambda x : x.replace(".npz", "_temp.npy")
+        for i in range(len(lab)):
+            try:
+                assert os.path.isfile(ztoy(lab[i]))
+            except AssertionError:
+                sig = loadnp(lab[i])
+                np.save(ztoy(lab[i]), sig)
+
+            try:
+                assert os.path.isfile(ztoy(seq[i]))
+            except AssertionError:
+                oeseq = loadnp(seq[i])
+                np.save(ztoy(seq[i]), oeseq)
+
+        
+        self.chr = np.array([ztoy(x) for x in lab])
+        self.one_hot = np.array([ztoy(x) for x in seq])
+
+        # self.length, self.lab, self.seq = [0],[],[]
         self.winsize = winsize
-        self.sample=sample
         self.reverse = reverse
-        self.truncate = truncate
         self.batch_size = batch_size
+        # self.index = []
+        # self.weights_f = []
+        self.step = headsteps
+        self.frac =frac
+        self.truncate = truncate
+        self.weights = weights
+        self.index_selection = index_selection
+        self.mask = mask
+
+        self.select_chr()
+
+
+    def select_chr(self):
+        self.lab, self.seq = [],[]
+        #self.index = []
+        self.weights_f = []
 
         # Read files
         """Check wether the file is a npz or npy and extract ["arr_0"] in case of npz
         Each label file must match with the sequence file (no double check programmed)"""
+        random_idx = np.random.choice(np.arange(0, len(self.chr)), size=min(3, len(self.chr)), replace=None)
 
-        if type(lab) == type(None):
-            assert len(seq) == 1, "you cannot predict multiple chromosome at once"
-            for i, s in enumerate(seq):
-                self.seq.append(loadnp(s))
-                self.lab.append(np.zeros(len(self.seq[-1])))
-                self.len.append(len(self.lab[-1]))
+        for ridx in random_idx:
+            self.lab.append(loadnp(self.chr[ridx])[self.truncate:])
+            self.seq.append(loadnp(self.one_hot[ridx]).reshape((-1,4))[self.truncate:len(self.lab[-1])+self.truncate,:])
+            self.lab[-1][:self.winsize+1] = 0
+            self.lab[-1][-self.winsize:] = 0
 
-        else:
-            for i,l in enumerate(lab):
-                self.lab.append(loadnp(l)[truncate:])
-                self.len.append(len(self.lab[-1]))
-                self.seq.append(loadnp(seq[i]).reshape((-1,4))[truncate:self.len[-1]+truncate,:])
+            if self.mask is not None:
+                print("masking labels...")
+                m = self.mask[ridx] - self.truncate
+                m = m[m>=0]
+                self.lab[-1][m] = 0 #remove selected part of signal, usually used for repeats
+                
 
+        self.lab = np.concatenate(self.lab, axis = None)
+        self.seq = np.concatenate(self.seq, axis = 0)
 
-                # N ([0,0,0,0]) removal 
-                if N==0:
-                    zidx = np.sum(self.seq[i], axis=1).ravel()
-                    zidx = zidx == 0
-                    zidx = np.convolve(zidx, np.ones(self.winsize), mode="same")                #Remove all indices where the window would contain any N ([0,0,0,0])
-                    zidx = np.where(zidx>=1)[0]
-                    self.lab[-1][zidx] = 0
+        #N
+        n_pos = np.sum(self.seq, axis = 1)==0
+        self.lab[np.convolve(n_pos, np.ones(self.winsize), mode = "same")!=0] = 0
 
-        # Shape lab and seq
-        self.lab = np.concatenate(self.lab).ravel()
-        self.seq = np.concatenate(self.seq).reshape((-1,4))
-
-        #Raw indices generation (0:N)
-        idx = []
-        cs = np.cumsum(self.len) #Cumulative sum of lab length
-
-        for i,l in enumerate(self.len[1:]):
-            s = cs[i]
-            #np.arange((self.winsize//2),l-(self.winsize//2)-1))
-            ltmp = np.unique(np.clip(np.arange(l), (self.winsize//2),l-(self.winsize//2)-1)) #Remove indices such as the windows can always fit
-            # With zeros
-            if self.zeros == True:
-                if self.sample == True:
-                    a = np.random.choice(ltmp,size=int(len(ltmp)*self.frac), replace=False) #Randomize indices order and apply fractionnement (frac)
-
-                else:
-                    a = ltmp[:int(len(ltmp)*self.frac)]
-
-            #Remove zeros
-            else:
-                zz = self.lab[s:s+l]!=0
-                zz = zz[(self.winsize//2):(l-(self.winsize//2))]
-                ret = ltmp[zz]
-                if self.sample:
-                    a = np.random.choice(a=ret, size=int(len(ret)*self.frac), replace=False)
-
-                else:
-                    a = ret[:int(len(ret)*self.frac)]
-            a += s
-            idx.append(a)
-        idx = np.concatenate(idx)
+        # if self.index_selection != "validation":
+        #     binidx = np.convolve(self.lab, np.ones(1000), "same")
+        #     self.index = np.where((self.lab!=0) & (binidx>=500))[0]
+        # else:
         
-        if self.apply_weight: #sklearn
-            self.weights_f = np.zeros(self.lab.shape)
-            weights_tmp = compute_sample_weight("balanced", self.lab[idx]).ravel()
-            self.weights_f[idx] = weights_tmp
+
+        if self.index_selection == "local":
+            self.index = np.where(self.lab!=0)[0]
+            self.index_epoch = np.random.choice(self.index, replace=False, size=(self.frac//self.batch_size)+1)
+            self.index_epoch = np.repeat(self.index_epoch, self.batch_size)
+            self.index_epoch += np.tile(np.arange(self.batch_size), (self.frac//self.batch_size)+1)
+        
+        elif self.index_selection == "no-overlap":
+            self.index = np.arange(len(self.lab))
+            bin, pos = np.where(reshape_bin(self.lab, self.winsize)!=0)
+            self.index_epoch = []
+            for n in np.random.choice(np.unique(bin),
+                                      replace=False,
+                                      size=min((self.frac, len(self.lab)%self.winsize))):
+                
+                self.index_epoch.append(
+                    self.index[np.random.choice(pos[bin==n], 1)])
+                
+            self.index_epoch=np.hstack(self.index_epoch)
             
         else:
-            self.weights_f = None
-
-        self.index =  idx
+            try:
+                self.index = np.where(self.lab!=0)[0]
+                self.index_epoch = np.random.choice(self.index, replace=False, size = min(self.frac, len(self.index)))
+                self.index = self.index[np.isin(self.index, self.index_epoch, invert=True)]
+            except (IndexError, ValueError) as e:
+                print(e, "New indices generated")
 
     def __len__(self):
-        return math.ceil(len(self.index)/self.batch_size)
+        size = len(self.index_epoch)//self.batch_size
+        if self.reverse == "augmentation":
+            return 2*size
+        else:
+            return size
     
     def on_epoch_end(self):
-        if self.sample:
-            self.index = np.random.choice(self.index, replace=False, size=len(self.index))
-
-    def __getitem__(self, index ):
-        """
-        Used to generate a batch with images when training/testing/validating our Keras model.
-        :param arr image_idx: index produced by generate_split_indexes
-        :param bool is_training: indicate if the generator is used to train (True) or else (False)
-        :param int batch_size: number of data in a single batch
-
-        steps are indexed from the stard of the window
-        """
-
-        step=[-500,-250,0,250,500]
-
-
-        images, classes, weights = [], [], []
-
-
-        for idx in self.index[index * self.batch_size:(index + 1) * self.batch_size]:
-            try:
-                im = self.seq[idx - (self.winsize//2) : idx+(self.winsize//2)+1,:]
-                classe = self.lab[[idx + x for x in step]]
-                assert im.shape == (self.winsize, 4)
-                try:
-                    weight = self.weights_f[[idx + x for x in step]]
-                except TypeError:
-                    pass
-
-            except (ValueError, AssertionError) as e:
-                # print("issue at index {}, value ignored".format(idx))
-                continue
-            
-            if self.reverse == 1: #reverse complement and std
-                im2 = im.copy()[::-1, ::-1]
-
-                images.append(im)
-                classes.append(classe)
-                
-                #Reverse complement
-                images.append(im2)
-                classes.append(classe.copy()[::-1])
-
-                try:
-                    weights.append(weight)
-                    weights.append(weight.copy()[::-1])
-                except  (TypeError, UnboundLocalError) as e:
-                    pass
-
-            elif self.reverse == 2: #reverse complement only
-                    a = im.copy()[::-1, ::-1]
-                    try:
-                        a.shape == im.shape
-                    except AssertionError:
-                        continue
-
-                    classes.append(classe.copy()[::-1])
-                    images.append(im.copy()[::-1, ::-1])
-
-                    try:
-                        weights.append(weight.copy()[::-1])
-                    except (TypeError, UnboundLocalError) as e:
-                        pass
-            elif self.reverse == 3: #random reverse
-                rand = np.random.rand()
-                if rand>0.5:
-                    classes.append(classe)
-                    images.append(im)
-                    weights.append(weight)
-                else:
-                    classes.append(classe.copy()[::-1])
-                    images.append(im.copy()[::-1, ::-1])
-                    weights.append(weight.copy()[::-1])
-            else:
-                classes.append(classe)
-                images.append(im)
-                
-                try:
-                    weights.append(weight)
-                except (TypeError, UnboundLocalError) as e:
-                    pass
-
-        classes = np.array(classes)
-        images = np.vstack(images).reshape(-1, self.winsize, 4)
-        # print("Classes", classes.shape)
-        # print("Images", images.shape)
-        # print("Weights", weights.shape)
-        if self.apply_weight:
-            weights = np.array(weights)
-            return images, classes, weights
+        if self.index_selection == "validation":
+            pass
+        elif len(self.chr)>3:
+            self.select_chr()
         else:
-            return images, classes
-
-class Sense_gen():
-    #UPDATED 14/06/2022
-    """
-    Generate batch for keras.fit()
-    """
-
-    def __init__(self,seq,lab=None, winsize = 2001, frac=1., 
-    zeros=False, sample = True, apply_weights= True, reverse=False, N=0, truncate = 3_000_000):
-        """
-        :param str seq: path to a numpy array stored as npz in ["arr_0"], the array contains the one-hot encoded DNA/RNA sequence
-        :param str lab:  path to a numpy array stored as npz in ["arr_0"], the array contains labels for the center of the considered window
-        :param str weights: path to a numpy array stored as npz in ["arr_0"], the array contains weights for each label
-        :param int winsize: size of the window, must be odd
-        :param float frac: fraction of the label to use, must be in [0:1]
-        :param bool zeros: include labels 0 in the training if True
-        :param bool sample: sample the labels if true
-        :param int apply_weights: 0: No weights, 1: array of sample weights, 2: dict of sample weights, 3: undersampling
-        :param int reverse: 0:No reverse, 1: both, 2: reverse only
-        :param int N: 0:remove N, 1:keep N
-        :param func fun: allow user to pass a function to select specific label ex : def func(arr): \n arr[arr<0.5] = 0 \n return arr 
-        """
-        # Assertions
-        assert winsize%2==1, "Window size must be odd"
-        assert 0.<=frac<=1., "frac must be in [0:1]"
-      
-        # Variables
-        self.len, self.lab, self.seq = [0],[],[]
-        self.frac = frac
-        self.zeros = zeros
-        self.apply_weight = apply_weights
-        self.winsize = winsize
-        self.sample=sample
-        self.reverse = reverse
-        self.truncate = truncate
-
-        # Read files
-        """Check wether the file is a npz or npy and extract ["arr_0"] in case of npz
-        Each label file must match with the sequence file (no double check programmed)"""
-
-        for i, s in enumerate(seq):
-            self.seq.append(loadnp(s))
-            self.len.append(len(self.seq[-1]))
-
-
-            # N ([0,0,0,0]) removal 
-            if N==0:
-                zidx = np.sum(self.seq[i], axis=1).ravel()
-                zidx = zidx == 0
-                zidx = np.convolve(zidx, np.ones(self.winsize), mode="same")                #Remove all indices where the window would contain any N ([0,0,0,0])
-                zidx = np.where(zidx>=1)[0]
-
-        # Shape lab and seq
-        self.seq = np.concatenate(self.seq).reshape((-1,4))
-
-
-    def generate_split_indexes(self):
-        """Generate indices for sequence and label and process data (weights, randomization, zeros"""
-        print("split")
-
-        #Raw indices generation (0:N)
-        idx = []
-        cs = np.cumsum(self.len) #Cumulative sum of lab length
-
-        for i,l in enumerate(self.len[1:]):
-            s = cs[i]
-            #np.arange((self.winsize//2),l-(self.winsize//2)-1))
-            ltmp = np.unique(np.clip(np.arange(l), (self.winsize//2),l-(self.winsize//2)-1)) #Remove indices such as the windows can always fit
-            # With zeros
-
-            if self.sample == True:
-                a = np.random.choice(ltmp,size=int(len(ltmp)*self.frac), replace=False) #Randomize indices order and apply fractionnement (frac)
-
+            if self.index_selection=="local":
+                self.index_epoch = np.random.choice(self.index, replace=False, size=(self.frac//self.batch_size)+1)
+                self.index_epoch = np.repeat(self.index_epoch, self.batch_size)
+                self.index_epoch += np.tile(np.arange(self.batch_size), (self.frac//self.batch_size)+1)
+           
+            elif self.index_selection == "no-overlap":
+                self.index = np.arange(len(self.lab))
+                bin, pos = np.where(reshape_bin(self.lab, self.winsize)!=0)
+                self.index_epoch = []
+                for n in np.random.choice(np.unique(bin),
+                                        replace=False,
+                                        size=min((self.frac, len(self.lab)%self.winsize))):
+                    self.index_epoch.append(
+                        self.index[np.random.choice(pos[bin==n], 1)])
+                    
+                self.index_epoch=np.hstack(self.index_epoch)
             else:
-                a = ltmp[:int(len(ltmp)*self.frac)]
-
-            a += s
-            idx.append(a)
-        idx = np.concatenate(idx)
-
-        return idx
+                self.index_epoch = np.random.choice(self.index, replace=False, size=self.frac)
 
 
-    def generate_images(self, image_idx, is_training=True, batch_size=4096, step=[-500,-250,0,250,500]):
+    def __getitem__(self, index):
         """
         Used to generate a batch with images when training/testing/validating our Keras model.
         :param arr image_idx: index produced by generate_split_indexes
@@ -516,43 +616,260 @@ class Sense_gen():
 
         steps are indexed from the stard of the window
         """
-        assert len(image_idx) >= batch_size, "not enough index for this batch_size"
-
-        if self.sample:
-            idx = np.random.choice(image_idx, replace=False, size=len(image_idx))
 
         images, classes, weights = [], [], []
+        halfsize = self.winsize//2
+        odd = self.winsize%2
 
-        while True:
-            for idx in image_idx:
-                try:
-                    im = self.seq[idx - (self.winsize//2) : idx+(self.winsize//2)+1,:]
-                    assert im.shape == (self.winsize, 4)
-  
+        low = index * self.batch_size
+        high = min(low + self.batch_size, len(self.index_epoch))
+        batch = self.index_epoch[low:high]
 
-                except (ValueError, AssertionError) as e:
-                    # print("issue at index {}, value ignored".format(idx))
-                    continue
+        #Sequences
+        ranges = create_ranges(batch-halfsize, batch + halfsize + odd)
+        
+
+        #Labels
+        heads = np.repeat(batch, len(self.step)).reshape((-1, len(self.step)))
+        heads += self.step
+
+        fixidx = np.unique(np.where(heads<len(self.lab))[0])
+        ranges = ranges.reshape((-1, self.winsize))[fixidx,:].ravel()
+        heads = heads[fixidx,:].ravel()
+        images = self.seq[ranges,:].reshape(-1, self.winsize, 4)
+        classes = self.lab[heads].reshape((-1, len(self.step)))
+        weights = np.zeros(classes.shape)
+        idx_weights = classes!=0
+        if self.weights:
+            weights[idx_weights] = compute_sample_weight("balanced", np.round(classes[idx_weights], 2).ravel())
+        else:
+            weights = np.ones(classes.shape)
+        
+        if self.reverse == "random":
+            randidx = np.random.choice(np.arange(len(images)), size=len(images)//2, replace=False)
+            images[randidx,...] = images[randidx,::-1, ::-1]
+            classes[randidx,:] = classes[randidx,::-1]
+            weights[randidx,:] = weights[randidx, ::-1]
+
+        elif self.reverse == "reverse":
+            images = images[:,::-1, ::-1]
+            classes = classes[:,::-1]
+            weights = weights[:, ::-1]
+
+        elif self.reverse == "augmentation":
+            images = np.vstack([images, images[:,::-1, ::-1]])
+            classes = np.vstack([classes, classes[:,::-1]])
+            weights = np.vstack([weights, weights[:, ::-1]])
+
+
+        # print(images.shape)
+        # print(classes.shape)
+        # print(weights.shape)
+        
+        if self.weights:
+            return {'sequence':images,
+                    'labels': classes,
+                    'weights':weights},
+        else:
+            return {'sequence':images,
+                    'labels': classes,
+                    'weights':np.ones(classes.shape)},
+
+
+# class PDNAmulti_bw(torch.utils.data.Dataset):
+#     """
+#     Generate batch for keras.fit() from bigwig
+#     """
+
+#     def __init__(self,seq,lab=None, chr=Iterable[int], winsize = 2001, frac=10_000_000, 
+#                 reverse="", truncate = 3_000_000, batch_size=2048, mask = None,
+#                 headsteps = np.array([-500, -250, 0, 250, 500]), weights = True, index_selection="",
+#                 process_fun = None):
+#         """
+#         :param str seq: path to a numpy array stored as npz in ["arr_0"], the array contains the one-hot encoded DNA/RNA sequence
+#         :param str lab:  path to a bigwig, containing counts
+#         :param Iterable[int]: list of chromosomes number to use
+#         :param str weights: path to a numpy array stored as npz in ["arr_0"], the array contains weights for each label
+#         :param int winsize: size of the window, must be odd
+#         :param float frac: fraction of the label to use, must be in [0:1]
+#         :param bool zeros: include labels 0 in the training if True
+#         :param bool sample: sample the labels if true
+#         :param int apply_weights: 0: No weights, 1: array of sample weights, 2: dict of sample weights, 3: undersampling
+#         :param int reverse: 0:No reverse, 1: both, 2: reverse only
+#         :param int N: 0:remove N, 1:keep N
+#         :param func fun: allow user to pass a function to select specific label ex : def func(arr): \n arr[arr<0.5] = 0 \n return arr 
+#         """
+#         self.bw = lab
+#         with pbw.open(self.bw) as f:
+#             self.chrom_size = f.chroms()
+
+#         self.chr = [f"chr{x}" for x in chr]
+#         self.one_hot = seq
+
+#         # self.length, self.lab, self.seq = [0],[],[]
+#         self.winsize = winsize
+#         self.reverse = reverse
+#         self.batch_size = batch_size
+#         # self.index = []
+#         # self.weights_f = []
+#         self.step = headsteps
+#         self.frac =frac
+#         self.truncate = truncate
+#         self.weights = weights
+#         self.index_selection = index_selection
+#         self.mask = mask
+#         self.process_fun = process_fun
+        
+#         self.select_chr()
+
+
+#     def select_chr(self, end=None):
+#         if end is None:
+#             self.lab, self.seq = [],[]
+#             #self.index = []
+#             self.weights_f = []
+
+#             # Read files
+#             """Check wether the file is a npz or npy and extract ["arr_0"] in case of npz
+#             Each label file must match with the sequence file (no double check programmed)"""
+#             random_idx = np.random.choice(np.arange(0, len(self.chr)), size=min(3, len(self.chr)), replace=None)
+
+#             bw = pbw.open(self.bw)
+#             for ridx in random_idx:
+#                 #load counts and process it
+#                 counts = np.array(bw.values(self.chr[ridx],
+#                                    0, self.chrom_size[self.chr[ridx]]), dtype=int)
                 
-                if self.reverse == 1: #reverse complement and std
-                    im2 = im.copy()[::-1, ::-1]
+#                 if self.process_fun is not None:
+#                     print(f"processing label \'{self.chr[ridx]}\'")
+#                     print(signature(self.process_fun))
+#                     print(counts)        
+#                     counts = self.process_fun(counts)
+#                 else: print(f"No preprocessing on labels \'{self.chr[ridx]}\'")
+                
+#                 self.lab.append(counts[self.truncate:])
+#                 self.seq.append(loadnp(self.one_hot[ridx]).reshape((-1,4))[self.truncate:len(self.lab[-1])+self.truncate,:])
+#                 self.lab[-1][:self.winsize+1] = 0
+#                 self.lab[-1][-self.winsize:] = 0
+#                 print(self.lab[-1], np.sum(self.lab[-1]))
+#                 if self.mask is not None:
+#                     print("masking labels...")
+#                     m = self.mask[ridx] - self.truncate
+#                     m = m[m>=0]
+#                     self.lab[-1][m] = 0 #remove selected part of signal, usually used for repeats
+#                 else: print(f"No masking on labels \'{self.chr[ridx]}\'")
+#             bw.close()
 
-                    images.append(im)
-                    classes.append(0)
-                    
-                    #Reverse complement
-                    images.append(im2)
-                    classes.append(1)
+#             self.lab = np.concatenate(self.lab, axis = None)
+#             self.seq = np.concatenate(self.seq, axis = 0)
 
-                # yielding condition
-                if len(images) >= batch_size:
-                    classes = np.array(classes)
-                    images = np.vstack(images).reshape(-1, self.winsize, 4)
+#             #N
+#             n_pos = np.sum(self.seq, axis = 1)==0
+#             self.lab[np.convolve(n_pos, np.ones(self.winsize), mode = "same")!=0] = 0
+        
+
+#         if self.index_selection == "local":
+#             self.index = np.where(self.lab!=0)[0]
+#             self.index_epoch = np.random.choice(self.index, replace=False, size=(self.frac//self.batch_size)+1)
+#             self.index_epoch = np.repeat(self.index_epoch, self.batch_size)
+#             self.index_epoch += np.tile(np.arange(self.batch_size), (self.frac//self.batch_size)+1)
+        
+#         elif self.index_selection == "no-overlap":
+#             self.index = np.arange(len(self.lab))
+#             bin, pos = np.where(reshape_bin(self.lab, self.winsize)!=0)
+#             self.index_epoch = []
+#             for n in np.random.choice(np.unique(bin),
+#                                       replace=False,
+#                                       size=min((self.frac, len(self.lab)%self.winsize))):
+                
+#                 self.index_epoch.append(
+#                     self.index[np.random.choice(pos[bin==n], 1)])
+                
+#             self.index_epoch=np.hstack(self.index_epoch)
+            
+#         else:
+#             try:
+#                 self.index = np.where(self.lab!=0)[0]
+#                 self.index_epoch = np.random.choice(self.index, replace=False, size = min(self.frac, len(self.index)))
+#                 self.index = self.index[np.isin(self.index, self.index_epoch, invert=True)]
+#             except (IndexError, ValueError) as e:
+#                 print(e, "New indices generated")
+
+#     def __len__(self):
+#         size = len(self.index_epoch)//self.batch_size
+#         if self.reverse == "augmentation":
+#             return 2*size
+#         else:
+#             return size
+    
+#     def on_epoch_end(self):
+#         if self.index_selection == "validation":
+#             pass
+#         elif len(self.chr)>3:
+#             self.select_chr()
+#         else:
+#             self.select_chr(end = 1)
+
+#     def __getitem__(self, index):
+#         """
+#         Used to generate a batch with images when training/testing/validating our Keras model.
+#         :param arr image_idx: index produced by generate_split_indexes
+#         :param bool is_training: indicate if the generator is used to train (True) or else (False)
+#         :param int batch_size: number of data in a single batch
+
+#         steps are indexed from the stard of the window
+#         """
+
+#         images, classes, weights = [], [], []
+#         halfsize = self.winsize//2
+#         odd = self.winsize%2
+
+#         low = index * self.batch_size
+#         high = min(low + self.batch_size, len(self.index_epoch))
+#         batch = self.index_epoch[low:high]
+
+#         #Sequences
+#         ranges = create_ranges(batch-halfsize, batch + halfsize + odd)
+        
+
+#         #Labels
+#         heads = np.repeat(batch, len(self.step)).reshape((-1, len(self.step)))
+#         heads += self.step
+
+#         fixidx = np.unique(np.where(heads<len(self.lab))[0])
+#         ranges = ranges.reshape((-1, self.winsize))[fixidx,:].ravel()
+#         heads = heads[fixidx,:].ravel()
+#         images = self.seq[ranges,:].reshape(-1, self.winsize, 4)
+#         classes = self.lab[heads].reshape((-1, len(self.step)))
+#         weights = np.zeros(classes.shape)
+#         idx_weights = classes!=0
+#         if self.weights:
+#             weights[idx_weights] = compute_sample_weight("balanced", np.round(classes[idx_weights], 2).ravel())
+#         else:
+#             weights = np.ones(classes.shape)
+        
+#         if self.reverse == "random":
+#             randidx = np.random.choice(np.arange(len(images)), size=len(images)//2, replace=False)
+#             images[randidx,...] = images[randidx,::-1, ::-1]
+#             classes[randidx,:] = classes[randidx,::-1]
+#             weights[randidx,:] = weights[randidx, ::-1]
+
+#         elif self.reverse == "reverse":
+#             images = images[:,::-1, ::-1]
+#             classes = classes[:,::-1]
+#             weights = weights[:, ::-1]
+
+#         elif self.reverse == "augmentation":
+#             images = np.vstack([images, images[:,::-1, ::-1]])
+#             classes = np.vstack([classes, classes[:,::-1]])
+#             weights = np.vstack([weights, weights[:, ::-1]])
 
 
-                    yield images, classes
-                    images, classes = [], []
-                    
-            if not is_training:
-                print("END")
-                return None
+#         # print(images.shape)
+#         # print(classes.shape)
+#         # print(weights.shape)
+        
+#         if self.weights:
+#             return images, classes, weights
+#         else:
+#             return images, classes
